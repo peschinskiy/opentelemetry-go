@@ -6,6 +6,7 @@ package resource
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	semconv "go.opentelemetry.io/otel/semconv/v1.45.0"
@@ -75,18 +76,31 @@ func (r *hostIDReaderDarwin) read() (string, error) {
 
 type hostIDReaderLinux struct {
 	readFile fileReader
+	// fromContainer reports whether the machine-id file at the given path was
+	// provided by a container rather than by the host. It may be nil.
+	fromContainer func(path string) bool
 }
 
 // read attempts to read the machine-id from /etc/machine-id followed by
-// /var/lib/dbus/machine-id. If neither location yields an ID an error will
-// be returned.
+// /var/lib/dbus/machine-id. Empty and "uninitialized" (see machine-id(5))
+// values are skipped. If neither location yields an ID, or the ID was
+// provided by a container, an error will be returned.
 func (r *hostIDReaderLinux) read() (string, error) {
-	if result, err := r.readFile("/etc/machine-id"); err == nil {
-		return strings.TrimSpace(result), nil
-	}
-
-	if result, err := r.readFile("/var/lib/dbus/machine-id"); err == nil {
-		return strings.TrimSpace(result), nil
+	for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
+		result, err := r.readFile(path)
+		if err != nil {
+			continue
+		}
+		id := strings.TrimSpace(result)
+		if id == "" || id == "uninitialized" {
+			continue
+		}
+		// A container's machine-id is baked into its image or generated at
+		// startup, so it does not identify the host.
+		if r.fromContainer != nil && r.fromContainer(path) {
+			return "", fmt.Errorf("host id not used: %s is provided by a container", path)
+		}
+		return id, nil
 	}
 
 	return "", errors.New("host id not found in: /etc/machine-id or /var/lib/dbus/machine-id")

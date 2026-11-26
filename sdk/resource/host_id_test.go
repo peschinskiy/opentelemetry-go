@@ -89,13 +89,49 @@ func TestHostIDReaderLinux(t *testing.T) {
 		}
 		return readFileError(filename)
 	}
+	readFilePrimary := func(content string) fileReader {
+		return func(filename string) (string, error) {
+			if filename == "/etc/machine-id" {
+				return content, nil
+			}
+			return readFileNoError(filename)
+		}
+	}
+	fromContainer := func(path string) bool { return path == "/etc/machine-id" }
 
 	tt := []struct {
 		name           string
 		fileReader     fileReader
+		fromContainer  func(string) bool
 		expectedHostID string
 		expectError    bool
 	}{
+		{
+			name:           "hostIDReaderLinux empty primary",
+			fileReader:     readFilePrimary("\n"),
+			expectedHostID: expectedHostID,
+			expectError:    false,
+		},
+		{
+			name:           "hostIDReaderLinux uninitialized primary",
+			fileReader:     readFilePrimary("uninitialized\n"),
+			expectedHostID: expectedHostID,
+			expectError:    false,
+		},
+		{
+			name:           "hostIDReaderLinux primary provided by a container",
+			fileReader:     readFileNoError,
+			fromContainer:  fromContainer,
+			expectedHostID: "",
+			expectError:    true,
+		},
+		{
+			name:           "hostIDReaderLinux primary provided by the host",
+			fileReader:     readFileNoError,
+			fromContainer:  func(string) bool { return false },
+			expectedHostID: expectedHostID,
+			expectError:    false,
+		},
 		{
 			name:           "hostIDReaderLinux valid primary",
 			fileReader:     readFileNoError,
@@ -119,7 +155,8 @@ func TestHostIDReaderLinux(t *testing.T) {
 	for _, tc := range tt {
 		t.Run(tc.name, func(t *testing.T) {
 			reader := hostIDReaderLinux{
-				readFile: tc.fileReader,
+				readFile:      tc.fileReader,
+				fromContainer: tc.fromContainer,
 			}
 			hostID, err := reader.read()
 			require.Equal(t, tc.expectError, err != nil)
